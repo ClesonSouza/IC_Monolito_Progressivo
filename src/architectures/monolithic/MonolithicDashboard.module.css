@@ -1,0 +1,52 @@
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.metricas {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+}
+
+.graficos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.inferior {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 16px;
+  min-height: 500px;
+}
+
+.lista {
+  min-height: 500px;
+}
+
+.explicacao {
+  min-height: 500px;
+  position: sticky;
+  top: 20px;
+}
+
+@media (max-width: 1024px) {
+  .inferior {
+    grid-template-columns: 1fr;
+  }
+  .explicacao {
+    position: static;
+  }
+}
+
+@media (max-width: 768px) {
+  .metricas {
+    grid-template-columns: 1fr 1fr;
+  }
+  .graficos {
+    grid-template-columns: 1fr;
+  }
+}
