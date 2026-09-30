@@ -17,8 +17,21 @@ export interface EstatisticasConfiguracao {
   // Grupo 1 - Carregamento
   tempoCarregamentoMedia: number;
   tempoCarregamentoDesvio: number;
+  /**
+   * Mediana e percentis 25/75 do tempo de carregamento, TBT e tempo de
+   * explicação. Calculados a partir das mesmas 20 execuções válidas já
+   * usadas na média, sem precisar rodar nada de novo. Complementam a média
+   * e o desvio padrão, que sozinhos podem esconder assimetria ou outliers
+   * (ver Problema 19/6 da revisão).
+   */
+  tempoCarregamentoMediana: number;
+  tempoCarregamentoP25: number;
+  tempoCarregamentoP75: number;
   tbtMedia: number;
   tbtDesvio: number;
+  tbtMediana: number;
+  tbtP25: number;
+  tbtP75: number;
   longTasksCountMedia: number;
   longTasksTotalDurationMedia: number;
   longTasksMaxDurationMedia: number;
@@ -47,12 +60,22 @@ export interface EstatisticasConfiguracao {
   // Grupo 3 - Interação
   tempoExplicacaoMedia: number;
   tempoExplicacaoDesvio: number;
+  tempoExplicacaoMediana: number;
+  tempoExplicacaoP25: number;
+  tempoExplicacaoP75: number;
   domAntesMedia: number;
   domDepoisMedia: number;
   elementosAdicionadosMedia: number;
   elementosAdicionadosDesvio: number;
   /** Reconciliação da StudentList isolada, ver marcarInicioLista/marcarFimLista (Problema 6) */
   reconciliacaoListaMsMedia: number | null;
+  /**
+   * Média de requisições de rede detectadas depois da marca de início da
+   * interação (ver Problema 3: antes, isso nunca era verificado, só
+   * presumido a partir da contagem constante de requisições no
+   * carregamento inicial).
+   */
+  requisicoesDuranteInteracaoMedia: number;
 }
 
 export interface RelatorioBenchmark {
@@ -86,6 +109,25 @@ function mediaNullable(values: (number | null)[]): number | null {
   return media(valid);
 }
 
+/**
+ * Percentil por interpolação linear (método comum, o mesmo usado por
+ * numpy.percentile no modo padrão). p vai de 0 a 100.
+ */
+function percentil(values: number[], p: number): number {
+  if (values.length === 0) return 0;
+  const ordenado = [...values].sort((a, b) => a - b);
+  const indice = (p / 100) * (ordenado.length - 1);
+  const abaixo = Math.floor(indice);
+  const acima = Math.ceil(indice);
+  if (abaixo === acima) return ordenado[abaixo];
+  const peso = indice - abaixo;
+  return ordenado[abaixo] * (1 - peso) + ordenado[acima] * peso;
+}
+
+function mediana(values: number[]): number {
+  return percentil(values, 50);
+}
+
 function calcularEstatisticas(execucoes: MetricasExecucao[]): EstatisticasConfiguracao {
   const c = execucoes.map((e) => e.carregamento);
   const r = execucoes.map((e) => e.recursos);
@@ -94,8 +136,14 @@ function calcularEstatisticas(execucoes: MetricasExecucao[]): EstatisticasConfig
   return {
     tempoCarregamentoMedia: media(c.map((x) => x.tempoCarregamento)),
     tempoCarregamentoDesvio: desvioPadrao(c.map((x) => x.tempoCarregamento)),
+    tempoCarregamentoMediana: mediana(c.map((x) => x.tempoCarregamento)),
+    tempoCarregamentoP25: percentil(c.map((x) => x.tempoCarregamento), 25),
+    tempoCarregamentoP75: percentil(c.map((x) => x.tempoCarregamento), 75),
     tbtMedia: media(c.map((x) => x.tbt)),
     tbtDesvio: desvioPadrao(c.map((x) => x.tbt)),
+    tbtMediana: mediana(c.map((x) => x.tbt)),
+    tbtP25: percentil(c.map((x) => x.tbt), 25),
+    tbtP75: percentil(c.map((x) => x.tbt), 75),
     longTasksCountMedia: media(c.map((x) => x.longTasksCount)),
     longTasksTotalDurationMedia: media(c.map((x) => x.longTasksTotalDuration)),
     longTasksMaxDurationMedia: media(c.map((x) => x.longTasksMaxDuration)),
@@ -119,11 +167,15 @@ function calcularEstatisticas(execucoes: MetricasExecucao[]): EstatisticasConfig
 
     tempoExplicacaoMedia: media(i.map((x) => x.tempoExplicacao)),
     tempoExplicacaoDesvio: desvioPadrao(i.map((x) => x.tempoExplicacao)),
+    tempoExplicacaoMediana: mediana(i.map((x) => x.tempoExplicacao)),
+    tempoExplicacaoP25: percentil(i.map((x) => x.tempoExplicacao), 25),
+    tempoExplicacaoP75: percentil(i.map((x) => x.tempoExplicacao), 75),
     domAntesMedia: media(i.map((x) => x.domAntes)),
     domDepoisMedia: media(i.map((x) => x.domDepois)),
     elementosAdicionadosMedia: media(i.map((x) => x.elementosAdicionados)),
     elementosAdicionadosDesvio: desvioPadrao(i.map((x) => x.elementosAdicionados)),
     reconciliacaoListaMsMedia: mediaNullable(i.map((x) => x.reconciliacaoListaMs)),
+    requisicoesDuranteInteracaoMedia: media(i.map((x) => x.requisicoesDuranteInteracao)),
   };
 }
 
@@ -148,6 +200,44 @@ export function gerarJSON(
 
   fs.writeFileSync(caminho, JSON.stringify(relatorio, null, 2));
   console.log(`  📄 JSON salvo: ${caminho}`);
+}
+
+// ============================================================
+// GERADOR DE JSON DE ESTATÍSTICAS CONSOLIDADAS
+// ============================================================
+
+export function gerarJSONEstatisticas(
+  resultados: ResultadoConfiguracao[],
+  caminho: string
+): void {
+  // Ordenar: primeiro por arquitetura, depois por tamanho de dataset
+  const ordenados = [...resultados].sort((a, b) => {
+    if (a.configuracao.architecture !== b.configuracao.architecture) {
+      return a.configuracao.architecture.localeCompare(b.configuracao.architecture);
+    }
+    return a.configuracao.datasetSize - b.configuracao.datasetSize;
+  });
+
+  const estatisticas = ordenados.map((r) => ({
+    architecture: r.configuracao.architecture,
+    datasetSize: r.configuracao.datasetSize,
+    execucoesValidas: r.valid.length,
+    ...r.estatisticas,
+  }));
+
+  const relatorio = {
+    metadata: {
+      geradoEm: new Date().toISOString(),
+      versao: '1.0.0',
+      descricao:
+        'Estatísticas consolidadas do benchmark (médias das execuções válidas). ' +
+        'Um registro por combinação de arquitetura × tamanho de dataset.',
+    },
+    estatisticas,
+  };
+
+  fs.writeFileSync(caminho, JSON.stringify(relatorio, null, 2));
+  console.log(`  📊 JSON de estatísticas salvo: ${caminho}`);
 }
 
 // ============================================================
@@ -187,6 +277,7 @@ export function gerarCSV(
       'longTasksAverageDuration_ms',
       'longTasksMaxDuration_ms',
       'domInicial',
+      'longTasksDuracoes_ms',
       'tempoAteRenderizacaoCompleta_ms',
       'geracaoDados_ms',
       'serializacaoWorker_ms',
@@ -213,6 +304,7 @@ export function gerarCSV(
       'domDepois',
       'elementosAdicionados',
       'reconciliacaoLista_ms',
+      'requisicoesDuranteInteracao',
     ].join(';')
   );
 
@@ -241,6 +333,7 @@ export function gerarCSV(
           c.longTasksAverageDuration.toFixed(2),
           c.longTasksMaxDuration.toFixed(2),
           c.domInicial,
+          c.longTasksDuracoes.map((d) => d.toFixed(1)).join('|') || 'nenhuma',
           c.tempoAteRenderizacaoCompleta?.toFixed(2) ?? 'N/A',
           c.geracaoDadosMs?.toFixed(2) ?? 'N/A',
           c.serializacaoWorkerMs?.toFixed(2) ?? 'N/A',
@@ -265,6 +358,7 @@ export function gerarCSV(
           i.domDepois,
           i.elementosAdicionados,
           i.reconciliacaoListaMs?.toFixed(2) ?? 'N/A',
+          i.requisicoesDuranteInteracao,
         ].join(';')
       );
     }
@@ -283,8 +377,14 @@ export function gerarCSV(
       // Grupo 1
       'tempoCarregamento_media',
       'tempoCarregamento_desvio',
+      'tempoCarregamento_mediana',
+      'tempoCarregamento_p25',
+      'tempoCarregamento_p75',
       'tbt_media',
       'tbt_desvio',
+      'tbt_mediana',
+      'tbt_p25',
+      'tbt_p75',
       'longTasksCount_media',
       'longTasksTotalDuration_media',
       'longTasksMaxDuration_media',
@@ -306,11 +406,15 @@ export function gerarCSV(
       // Grupo 3
       'tempoExplicacao_media',
       'tempoExplicacao_desvio',
+      'tempoExplicacao_mediana',
+      'tempoExplicacao_p25',
+      'tempoExplicacao_p75',
       'domAntes_media',
       'domDepois_media',
       'elementosAdicionados_media',
       'elementosAdicionados_desvio',
       'reconciliacaoLista_media',
+      'requisicoesDuranteInteracao_media',
     ].join(';')
   );
 
@@ -324,8 +428,14 @@ export function gerarCSV(
         config.architecture,
         formatNumber(e.tempoCarregamentoMedia),
         formatNumber(e.tempoCarregamentoDesvio),
+        formatNumber(e.tempoCarregamentoMediana),
+        formatNumber(e.tempoCarregamentoP25),
+        formatNumber(e.tempoCarregamentoP75),
         formatNumber(e.tbtMedia),
         formatNumber(e.tbtDesvio),
+        formatNumber(e.tbtMediana),
+        formatNumber(e.tbtP25),
+        formatNumber(e.tbtP75),
         formatInt(e.longTasksCountMedia),
         formatNumber(e.longTasksTotalDurationMedia),
         formatNumber(e.longTasksMaxDurationMedia),
@@ -345,11 +455,15 @@ export function gerarCSV(
         formatInt(e.imageBytesMedia),
         formatNumber(e.tempoExplicacaoMedia),
         formatNumber(e.tempoExplicacaoDesvio),
+        formatNumber(e.tempoExplicacaoMediana),
+        formatNumber(e.tempoExplicacaoP25),
+        formatNumber(e.tempoExplicacaoP75),
         formatInt(e.domAntesMedia),
         formatInt(e.domDepoisMedia),
         formatNumber(e.elementosAdicionadosMedia),
         formatNumber(e.elementosAdicionadosDesvio),
         formatNumber(e.reconciliacaoListaMsMedia),
+        formatNumber(e.requisicoesDuranteInteracaoMedia),
       ].join(';')
     );
   }

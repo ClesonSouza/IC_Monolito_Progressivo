@@ -13,6 +13,14 @@ export interface MetricasCarregamento {
   longTasksAverageDuration: number;
   longTasksMaxDuration: number;
   domInicial: number;
+  /**
+   * Duração individual de cada Long Task detectada no carregamento (ms),
+   * na ordem em que ocorreram. Antes, o observer capturava esses valores
+   * mas eles eram descartados: só contagem, soma e máximo chegavam ao
+   * relatório final. Expor a lista completa permite montar um histograma
+   * ou identificar outliers em vez de depender só do resumo agregado.
+   */
+  longTasksDuracoes: number[];
   /** Measure 'tempo-ate-renderizacao-completa' (ver marcarRenderPesadoFim) */
   tempoAteRenderizacaoCompleta: number | null;
   /** Measure 'geracao-dados' (ida e volta até a thread principal receber o worker) */
@@ -53,6 +61,17 @@ export interface MetricasInteracao {
    * do chunk lazy do ExplanationPanel terminar de carregar.
    */
   reconciliacaoListaMs: number | null;
+  /**
+   * Número de novas entradas na Resource Timing API cujo startTime é
+   * posterior à marca 'explicacao-inicio', ou seja, requisições disparadas
+   * durante a própria interação medida (clique até explicação pronta), não
+   * durante o carregamento inicial da página.
+   *
+   * Antes, o código nunca verificava isso: a afirmação de que "nenhuma
+   * requisição de rede ocorre no clique" não era um dado medido, era uma
+   * suposição. Este campo mede isso diretamente.
+   */
+  requisicoesDuranteInteracao: number;
 }
 
 export interface MetricasExecucao {
@@ -181,6 +200,8 @@ export async function coletarMetricasCarregamento(
       longTasksMaxDuration: maxDuration,
 
       domInicial,
+
+      longTasksDuracoes: longTasksData.map((t) => t.duration),
 
       tempoAteRenderizacaoCompleta: lerMeasure('tempo-ate-renderizacao-completa'),
       geracaoDadosMs: lerMeasure('geracao-dados'),
@@ -429,13 +450,19 @@ export async function coletarMetricasInteracao(
     setTimeout(resolve, 100)
   );
 
-  // Coletar tempo de explicação e reconciliação da lista
-  const { tempoExplicacao, reconciliacaoListaMs } =
+  // Coletar tempo de explicação, reconciliação da lista e requisições
+  // disparadas durante a própria interação (depois do clique)
+  const { tempoExplicacao, reconciliacaoListaMs, requisicoesDuranteInteracao } =
     await page.evaluate(() => {
       const measures =
         performance.getEntriesByType(
           'measure'
         ) as PerformanceMeasure[];
+
+      const marks =
+        performance.getEntriesByType(
+          'mark'
+        ) as PerformanceMark[];
 
       const lerMeasure = (nome: string): number | null => {
         const encontrada = measures.find((m) => m.name === nome);
@@ -444,20 +471,15 @@ export async function coletarMetricasInteracao(
 
       let tempoExplicacao = lerMeasure('tempo-explicacao');
 
+      const inicio =
+        marks.find(
+          (m) =>
+            m.name ===
+            'explicacao-inicio'
+        );
+
       if (tempoExplicacao === null) {
         // Fallback: calcular via marks
-        const marks =
-          performance.getEntriesByType(
-            'mark'
-          ) as PerformanceMark[];
-
-        const inicio =
-          marks.find(
-            (m) =>
-              m.name ===
-              'explicacao-inicio'
-          );
-
         const fim =
           marks.find(
             (m) =>
@@ -471,9 +493,25 @@ export async function coletarMetricasInteracao(
             : 0;
       }
 
+      // Requisições de rede cujo início é posterior ao clique. Antes, o
+      // código nunca verificava isso, então a afirmação de que "nenhuma
+      // requisição ocorre durante a interação" não era medida, era suposta.
+      let requisicoesDuranteInteracao = 0;
+      if (inicio) {
+        const recursos =
+          performance.getEntriesByType(
+            'resource'
+          ) as PerformanceResourceTiming[];
+
+        requisicoesDuranteInteracao = recursos.filter(
+          (r) => r.startTime > inicio.startTime
+        ).length;
+      }
+
       return {
         tempoExplicacao,
         reconciliacaoListaMs: lerMeasure('reconciliacao-lista'),
+        requisicoesDuranteInteracao,
       };
     });
 
@@ -494,6 +532,8 @@ export async function coletarMetricasInteracao(
       domDepois - domAntes,
 
     reconciliacaoListaMs,
+
+    requisicoesDuranteInteracao,
   };
 }
 

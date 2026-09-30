@@ -168,7 +168,16 @@ export function gerarDataset(config: DatasetConfig): Estudante[] {
   return estudantes;
 }
 
-// Datasets pré-configurados para experimentos
+// Datasets pré-configurados para experimentos.
+//
+// Todos os tamanhos efetivamente usados pelo benchmark (ver DATASET_SIZES em
+// tests/performance/benchmark.ts) estão listados aqui explicitamente, com a
+// mesma seed fixa (12345). Antes, 5000 e 10000 não apareciam neste mapa e
+// caíam num fallback (`DATASETS[size] || { size, seed: 12345 }`) definido em
+// generator.worker.ts, que produzia o mesmo resultado, mas de forma
+// implícita e não documentada. Deixar todos os tamanhos explícitos aqui evita
+// depender desse fallback para descrever quais configurações foram
+// realmente testadas.
 export const DATASETS: Record<number, DatasetConfig> = {
   50: { size: 50, seed: 12345 },
   100: { size: 100, seed: 12345 },
@@ -177,5 +186,8 @@ export const DATASETS: Record<number, DatasetConfig> = {
   1000: { size: 1000, seed: 12345 },
   2000: { size: 2000, seed: 12345 },
   5000: { size: 5000, seed: 12345 },
+  6000: { size: 6000, seed: 12345 },
+  7000: { size: 7000, seed: 12345 },
+  8000: { size: 8000, seed: 12345 },
   10000: { size: 10000, seed: 12345 },
 };
