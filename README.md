@@ -1,8 +1,8 @@
 # Dashboard de Risco de Evasão Acadêmica: Monolítico vs Progressivo
 
-Projeto experimental de iniciação científica que compara duas estratégias de arquitetura front-end para exibir explicações de risco de evasão acadêmica em um dashboard com listas grandes de estudantes: uma que pré-renderiza tudo antecipadamente e outra que carrega sob demanda.
+Projeto experimental de iniciação científica que compara duas estratégias de arquitetura front-end para exibir explicações de risco de evasão acadêmica em um dashboard com listas grandes de estudantes: uma que pré-renderiza tudo antecipadamente (Monolítica) e outra que carrega sob demanda (Progressiva).
 
-O objetivo não é o dashboard em si. É medir, com dados reais de performance do navegador, o custo de cada abordagem conforme o volume de dados cresce.
+O objetivo não é o dashboard em si, mas medir, com dados reais de performance do navegador, o custo de cada abordagem conforme o volume de dados cresce.
 
 ## As duas arquiteturas
 
@@ -16,11 +16,11 @@ As duas arquiteturas compartilham o mesmo código de lista, filtros, gráficos e
 
 ## Stack
 
-- React 18 + TypeScript + Vite
-- React Router (uma rota por cenário, cada uma carregada via `React.lazy` para gerar bundles separados)
-- Recharts para os gráficos do dashboard
-- Web Worker para gerar os dados sintéticos fora da thread principal
-- Puppeteer para a automação dos testes de performance
+- **React 18 + TypeScript + Vite**
+- **React Router**: uma rota por cenário (`/monolitico` e `/progressivo`), cada uma carregada via `React.lazy` para gerar bundles e chunks JS separados no build de produção.
+- **Recharts**: para a renderização dos gráficos do dashboard.
+- **Web Worker**: para gerar os dados sintéticos fora da thread principal (`src/data/generator.worker.ts`).
+- **Puppeteer**: para automação e execução padronizada dos testes de performance em navegador sem cabeça (headless).
 
 ## Rodando o projeto
 
@@ -33,87 +33,118 @@ Acesse `http://localhost:5173/monolitico` ou `http://localhost:5173/progressivo`
 
 ## Dados sintéticos
 
-Os estudantes são gerados por um algoritmo determinístico com semente fixa (`src/data/generator.ts`), não vêm de nenhuma base real. O risco de evasão é calculado por uma fórmula de regras simples (frequência, disciplinas pendentes, atraso de mensalidade, notas) mais um ruído aleatório, só para dar uma distribuição plausível. Os "valores de impacto" de cada fator, no estilo SHAP, também são sorteados dentro de um intervalo fixo, não vêm de nenhum modelo preditivo real.
+Os estudantes são gerados por um algoritmo determinístico com semente fixa (`src/data/generator.ts`) executado em um Web Worker dedicado (`useEstudantesWorker`), garantindo que a thread principal da UI permaneça desimpedida durante a geração de massa de dados.
 
-Como a semente é fixa e depende só do tamanho do dataset, os dois cenários sempre recebem exatamente os mesmos estudantes para um mesmo tamanho, em todas as repetições.
+O risco de evasão é calculado por uma fórmula de regras simples (frequência, disciplinas pendentes, atraso de mensalidade, notas) mais um ruído aleatório para dar uma distribuição plausível. Os valores de impacto de cada fator (estilo SHAP) também são sorteados dentro de um intervalo fixo.
 
-Tamanhos de dataset usados no benchmark: 50, 100, 250, 500, 1000, 2000, 5000 e 10000 registros.
+Como a semente é fixa e depende apenas do tamanho do dataset, os dois cenários sempre recebem exatamente os mesmos estudantes para um mesmo tamanho de dataset, em todas as repetições.
+
+**Tamanhos de dataset usados no benchmark:** 50, 100, 250, 500, 1000, 2000, 5000, 6000, 7000, 8000 e 10000 registros.
 
 ## Benchmark de performance
 
-Para rodar os testes utilize
+Para rodar os testes de performance automatizados:
 
 ```bash
 npm run test:performance
 ```
 
-Cada combinação de arquitetura e tamanho de dataset roda 5 vezes de aquecimento (descartadas) seguidas de 20 execuções válidas, cada uma em uma instância nova do navegador com cache HTTP desabilitado. Isso dá 16 combinações, 25 execuções cada, 400 execuções no total.
 
-Os resultados saem em `tests/performance/results/`, em JSON (bruto + estatísticas) e em um CSV consolidado com ponto e vírgula como separador.
+### Parâmetros de execução do benchmark
+
+- **Configurações**: 22 combinações (11 tamanhos de dataset × 2 arquiteturas).
+- **Embaralhamento (Randomização)**: As configurações têm sua ordem de execução embaralhada aleatoriamente (via algoritmo Fisher-Yates) a cada rodada do benchmark. Isso elimina viés sistemático do sistema operacional (aquecimento térmico de CPU, cache de disco ou processos concorrentes).
+- **Repetições**: Cada configuração roda **5 execuções de aquecimento (warmup)** (descartadas) seguidas de **20 execuções válidas**, cada uma em um processo isolado do navegador com cache HTTP desabilitado.
+- **Total de execuções**: 22 configurações × 25 execuções = 550 execuções no total.
+
+### Saídas do benchmark
+
+Os relatórios e métricas extraídos são salvos no diretório `tests/performance/results/`:
+
+- `resultados-monolitico.json`: Dados brutos de todas as execuções do Cenário A.
+- `resultados-progressivo.json`: Dados brutos de todas as execuções do Cenário B.
+- `resultados-consolidado.csv`: Tabela consolidada com todas as métricas por execução (separador `;`).
+- `estatisticas-consolidadas.json`: Médias, desvios padrão e estatísticas agregadas por combinação de arquitetura e tamanho de dataset.
 
 ## Métricas coletadas
 
-Tudo é medido via Performance API nativa do navegador (Navigation Timing, `PerformanceObserver` para long tasks, Resource Timing, `performance.memory`) e marcações customizadas (`performance.mark`/`performance.measure`). Não é usado Lighthouse em nenhuma etapa.
+Tudo é medido via **Performance API** nativa do navegador (Navigation Timing, `PerformanceObserver` para Long Tasks, Resource Timing, `performance.memory`) e marcações customizadas (`performance.mark` e `performance.measure`).
 
-| Métrica | O que mede |
-|---|---|
-| `tempoCarregamento` | Tempo até o evento `load` do navegador (rede e parsing) |
-| `tbt` / `longTasks*` | Bloqueio da thread principal por tarefas longas |
-| `tempoAteRenderizacaoCompleta` | Do início da navegação até o fim do processamento pesado do React, independente do evento `load` |
-| `geracaoDadosMs` | Tempo do Web Worker gerar os dados, ida e volta até a thread principal |
-| `serializacaoWorkerMs` | Do worker entregar os dados até o React commitar isso na tela |
-| `domInicial` | Nós no DOM logo após o carregamento |
-| `tempoExplicacao` | Do clique até o painel de explicação estar pronto |
-| `reconciliacaoListaMs` | Do clique até a lista e o estado de carregamento serem commitados, isolado do restante da explicação |
-| `requisicoes*` / `*Bytes` | Quantidade e tamanho dos arquivos JS/CSS/imagem carregados |
-
-`tempoExplicacao` menos `reconciliacaoListaMs` é o número mais próximo que temos do custo isolado do lazy loading no Cenário B.
-
-## O que os dados mostram até agora
-
-Nos tamanhos que testamos, o **Cenário A** apresenta um custo maior tanto no carregamento inicial quanto na interação, e essa diferença aumenta conforme o volume de dados cresce.
-
-Mas o ponto mais interessante não é simplesmente dizer que um cenário é _"melhor"_ que o outro. A diferença está principalmente em **quando o custo é pago**.
-
-No **Cenário A**, praticamente todo o trabalho acontece durante o carregamento da página. Já no **Cenário B**, esse custo é distribuído: uma parte acontece inicialmente e outra parte é paga conforme o usuário interage e abre uma explicação.
-
-Vale reforçar que esse resultado é específico desta implementação `React 18`, `Suspense` e um único componente de explicação. Portanto, ele não deve ser interpretado como uma conclusão geral sobre **pré-renderização** ou **lazy loading** como técnicas.
+| Métrica | Grupo | O que mede |
+|---|---|---|
+| `tempoCarregamento` | Carregamento | Tempo do início até o evento `load` do navegador |
+| `tempoAteInterativo` | Carregamento | Tempo até `domInteractive` (parse do HTML concluído) |
+| `tbt` | Carregamento | Total Blocking Time (soma do tempo excedente a 50ms de todas as Long Tasks) |
+| `longTasksCount` | Carregamento | Quantidade total de Long Tasks registradas |
+| `longTasksTotalDuration` | Carregamento | Soma total da duração das Long Tasks (ms) |
+| `longTasksMaxDuration` | Carregamento | Maior duração individual de Long Task registrada (ms) |
+| `longTasksDuracoes` | Carregamento | Array com as durações individuais de cada Long Task na ordem em que ocorreram |
+| `tempoAteRenderizacaoCompleta` | Carregamento | Do início da navegação até a conclusão da renderização inicial dos dados |
+| `geracaoDadosMs` | Carregamento | Tempo da geração de dados no Web Worker (ida e volta) |
+| `serializacaoWorkerMs` | Carregamento | Do worker entregar os dados até o React commitar os componentes na tela |
+| `domInicial` | Carregamento | Quantidade de nós no DOM logo após o carregamento inicial |
+| `heapUsed` / `heapTotal` | Recursos | Memória JavaScript JS Heap consumida e alocada (MB) |
+| `domAposCarregamento` | Recursos | Quantidade de nós no DOM após renderização completa dos componentes |
+| `requisicoesTotal` / `*Bytes` | Recursos | Quantidade total de requisições e bytes transferidos (JS, CSS, Imagens, etc.) |
+| `tempoExplicacao` | Interação | Tempo total do clique no estudante até a renderização/exibição da explicação |
+| `reconciliacaoListaMs` | Interação | Tempo do clique até a atualização do estado da lista |
+| `requisicoesDuranteInteracao` | Interação | Requisições de rede iniciadas exclusivamente após o clique de seleção |
+| `elementosAdicionados` | Interação | Diferença de elementos no DOM antes e depois da interação de clique |
 
 ## Estrutura de pastas
 
 ```
 src/
 ├── architectures/
-│   ├── monolithic/       Cenário A
-│   └── progressive/      Cenário B
-├── components/           Lista, filtros, gráficos, painel de explicação (compartilhados)
+│   ├── monolithic/          # Cenário A: Monolítico (pré-renderização)
+│   └── progressive/         # Cenário B: Progressivo (lazy loading sob demanda)
+├── components/              # Componentes UI compartilhados entre as arquiteturas
+│   ├── Charts/              # Gráficos em Recharts (Modalidade, Curso, Risco, Região)
+│   ├── DatasetControl/      # Selector de tamanho do dataset
+│   ├── ExplanationPanel/    # Painel detalhado de explicação de risco (SHAP)
+│   ├── Filters/             # Filtros por período, curso, região e modalidade
+│   ├── Header/              # Cabeçalho da aplicação
+│   ├── Layout/              # Structure layout dos dashboards
+│   ├── MetricCard/          # Cartões de métricas (Evasão, Ocupação, Conclusão, Risco)
+│   ├── RiskIndicator/       # Indicadores visuais de nível de risco
+│   ├── Sidebar/             # Barra de navegação lateral
+│   └── StudentList/         # Lista interativa de estudantes
 ├── data/
-│   ├── generator.ts      Gerador de dados sintéticos
-│   └── generator.worker.ts  Mesmo gerador, rodando em Web Worker
-├── hooks/useEstudantesWorker.ts  Hook que consome o worker, usado pelos dois cenários
-├── services/studentService.ts    Filtros, métricas agregadas, dados de gráfico
-├── utils/performance.ts  Toda a instrumentação de performance (marks/measures)
-└── types/                Tipagens compartilhadas
+│   ├── generator.ts         # Algoritmo determinístico de dados sintéticos
+│   └── generator.worker.ts  # Web Worker para geração de dados
+├── hooks/
+│   └── useEstudantesWorker.ts # Hook React para integração com o Worker
+├── services/
+│   └── studentService.ts    # Regras de cálculo, estatísticas e filtros
+├── styles/
+│   └── global.css           # Estilos globais da aplicação
+├── types/                   # Definições de tipos TypeScript compartilhadas
+└── utils/
+    └── performance.ts       # Utility para instrumentação de performance (marks/measures)
 
 tests/performance/
-├── core/                 Puppeteer, coleta de métricas, geração de relatório
-├── benchmark.ts          Orquestrador principal (warmup, execuções válidas, todos os tamanhos)
-├── start-and-run.ts      Builda produção + sobe preview + roda o benchmark
-├── runner.ts             Pipeline legado, roda contra o dev server
-└── results/              Saída dos testes (JSON e CSV)
+├── core/                    # Núcleo de automação do Puppeteer
+│   ├── browser.ts           # Inicializador de instâncias isoladas do navegador
+│   ├── metrics.ts           # Coletor de métricas (Navigation, Resource e Interação)
+│   └── reporter.ts          # Consolidador estatístico e emissor de JSON/CSV
+├── benchmark.ts             # Orquestrador do benchmark com embaralhamento e repetições
+├── start-and-run.ts         # Script principal (build de produção + servidor preview + benchmark)
+└── results/                 # Saída estruturada dos testes de performance
+    ├── estatisticas-consolidadas.json
+    ├── resultados-consolidado.csv
+    ├── resultados-monolitico.json
+    └── resultados-progressivo.json
 ```
 
 ## Limitações conhecidas
 
-Coisas que ainda não estão controladas ou testadas, e que valem menção honesta em qualquer análise feita a partir desses dados:
+Coisas a serem consideradas em qualquer análise feita a partir desses dados:
 
-- A ordem de execução é fixa (todos os tamanhos do Cenário A, depois todos do B), sem randomização ou contrabalanceamento.
-- Não há throttling de CPU nem de rede, os testes rodam nas condições da máquina local.
-- O clique de teste é sempre no primeiro estudante da lista, a posição não é variada.
-- Não existe nenhum cenário de controle com virtualização de lista ou memoização de componente.
-- As estatísticas reportadas são só média e desvio padrão, sem mediana, percentis ou teste de significância.
-- Não há ablação separando o custo da lista do custo do painel de explicação. A decomposição feita hoje (`reconciliacaoListaMs` vs `tempoExplicacao`) é uma aproximação via marcações no código, não profiling de componente por componente.
+- **Condições locais de ambiente**: Não há throttling artificial de CPU nem de rede aplicados nos testes de baseline; os benchmarks rodam nas condições reais de hardware e sistema operacional da máquina de execução.
+- **Ponto de interação padronizado**: O clique automatizado de teste é efetuado consistentemente no primeiro estudante da lista.
+- **Escopo arquitetural específico**: O teste compara especificamente pré-renderização integral via CSS vs. carregamento sob demanda com `React.lazy`/`Suspense`. Não inclui cenários de controle com virtualização de lista (ex: `react-window`) nem memoização avançada (`React.memo`).
+- **Análise estatística**: As estatísticas reportadas no consolidado cobrem média amostral e desvio padrão.
 
 ## Segurança e dados
 
-Todos os dados são sintéticos e gerados localmente. Não há credenciais, chaves de API ou dados reais de estudantes em nenhum lugar do repositório.
+Todos os dados são sintéticos e gerados localmente via algoritmo determinístico. Não há credenciais, chaves de API ou dados reais em nenhum lugar do repositório.
